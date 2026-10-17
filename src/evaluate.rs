@@ -99,9 +99,18 @@ impl Evaluator {
         drop(eval_send);
         let nth = self.nth.load(SeqCst);
         // Yield to ensure all evaluations are executed
-        // This can prevent deadlocks when run within an existing rayon thread pool
+        // This can prevent deadlocks when run within an existing rayon thread pool.
+        // Outside of a rayon pool there is nothing to yield to: the receiver below
+        // will block until all evaluations are finished, so avoid busy-waiting.
         while self.executed.load(Relaxed) < nth {
-            rayon::yield_local();
+            match rayon::yield_now() {
+                // Not running on a rayon worker thread
+                None => break,
+                // Ran some other pending work, check again
+                Some(rayon::Yield::Executed) => {}
+                // No work available anywhere, let other threads make progress
+                Some(rayon::Yield::Idle) => std::thread::yield_now(),
+            }
         }
         eval_recv.into_iter().min_by_key(Candidate::cmp_key)
     }
